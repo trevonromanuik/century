@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Century</title>
+</head>
+<body>
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://pixijs.download/release/pixi.js"></script>
+<script>
+
+    let cards_by_id = null;
+    let state = null;
+
+    const CARD_WIDTH = 80;
+    const CARD_HEIGHT = 160;
+    const CARD_PADDING = 5;
+
+    const GEM_RADIUS = 5;
+    const GEM_PADDING = 2;
+
+    const SCREEN_WIDTH = 1280;
+    const SCREEN_HEIGHT = 640;
+    const BACKGROUND_COLOR = 0x1099bb;
+    const NUM_GOLEM_CARDS = 5;
+    const NUM_MERCHANT_CARDS = 6;
+
+    const app = new PIXI.Application({
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+        backgroundColor: BACKGROUND_COLOR
+    });
+    document.body.appendChild(app.view);
+
+    const card_sprites_by_id = {};
+
+    const card_background = new PIXI.Graphics();
+    card_background.beginFill(0xbbbbbb);
+    card_background.drawRect(0, 0, CARD_WIDTH, CARD_HEIGHT);
+
+    const gem_graphics = ['y', 'g', 'b', 'r'].reduce((acc, g) => {
+        const gem = new PIXI.Graphics();
+        const color = {
+            y: 0xffff00,
+            g: 0x00ff00,
+            b: 0x0000ff,
+            r: 0xff0000
+        }[g];
+        gem.beginFill(color);
+        gem.drawCircle(GEM_RADIUS, GEM_RADIUS, GEM_RADIUS);
+        acc[g] = gem;
+        return acc;
+    }, {});
+
+    const upgrade_gem_graphic = new PIXI.Graphics();
+    upgrade_gem_graphic.beginFill(0x000000);
+    upgrade_gem_graphic.drawPolygon(
+        0, (GEM_RADIUS * 2),
+        (GEM_RADIUS * 2), (GEM_RADIUS * 2),
+        GEM_RADIUS, 0,
+        0, (GEM_RADIUS * 2)
+    );
+    gem_graphics['^'] = upgrade_gem_graphic;
+
+    const golem_card_back_sprite = new PIXI.Graphics();
+    golem_card_back_sprite.beginFill(0x00ff00);
+    golem_card_back_sprite.drawRect(0, 0, CARD_WIDTH, CARD_HEIGHT);
+
+    const GOLEMS_CONTAINER_WIDTH = ((NUM_GOLEM_CARDS + 1) * CARD_WIDTH) + (NUM_GOLEM_CARDS * CARD_PADDING);
+
+    const golems_container = new PIXI.Container();
+    golems_container.x = (SCREEN_WIDTH / 2) - (GOLEMS_CONTAINER_WIDTH / 2);
+    golems_container.y = (SCREEN_HEIGHT / 2) - CARD_HEIGHT - CARD_PADDING;
+    app.stage.addChild(golems_container);
+
+    const merchant_card_back_sprite = new PIXI.Graphics();
+    merchant_card_back_sprite.beginFill(0x0000ff);
+    merchant_card_back_sprite.drawRect(0, 0, CARD_WIDTH, CARD_HEIGHT);
+
+    const MERCHANTS_CONTAINER_WIDTH = ((NUM_MERCHANT_CARDS + 1) * CARD_WIDTH) + (NUM_MERCHANT_CARDS * CARD_PADDING);
+
+    const merchants_container = new PIXI.Container();
+    merchants_container.x = (SCREEN_WIDTH / 2) - (MERCHANTS_CONTAINER_WIDTH / 2);
+    merchants_container.y = (SCREEN_HEIGHT / 2);
+    app.stage.addChild(merchants_container);
+
+    const hand_container = new PIXI.Container();
+    hand_container.y = (SCREEN_HEIGHT - CARD_HEIGHT);
+    app.stage.addChild(hand_container);
+
+    const GEMS_CONTAINER_WIDTH = ((5 * ((GEM_RADIUS * 2) + GEM_PADDING)) - GEM_PADDING);
+    const GEMS_CONTAINER_HEIGHT = ((2 * ((GEM_RADIUS * 2) + GEM_PADDING)) - GEM_PADDING);
+
+    const gems_container = new PIXI.Graphics();
+    gems_container.x = ((SCREEN_WIDTH / 4) * 3) - (GEMS_CONTAINER_WIDTH / 2);
+    gems_container.y = (SCREEN_HEIGHT - (CARD_HEIGHT / 2));
+    gems_container.beginFill(0xbbbbbb);
+    gems_container.drawRect(0, 0, GEMS_CONTAINER_WIDTH, GEMS_CONTAINER_HEIGHT);
+    app.stage.addChild(gems_container);
+
+    // Add a variable to count up the seconds our demo has been running
+    let elapsed = 0.0;
+
+    // Tell our application's ticker to run a new callback every frame, passing
+    // in the amount of time that has passed since the last tick
+    app.ticker.add((delta) => {
+
+        // Add the time to our total elapsed time
+        elapsed += delta;
+
+    });
+
+    function syncRenderingState() {
+
+        console.log('syncRenderingState');
+
+        renderGolemCards();
+
+        renderMerchantCards();
+
+        const current_player_id = state.player_ids[state.current_player_index];
+        const current_player = state.players[current_player_id];
+        renderHand(current_player.hand);
+        renderGems(current_player.gems);
+
+    }
+
+    function forEachGem(gems, fn) {
+        let n = 0;
+        Object.keys(gems).forEach((g) => {
+            for(let i = 0; i < gems[g]; i++) {
+                fn(g, n++);
+            }
+        });
+    }
+
+    function renderCard(card_id) {
+
+        if(card_sprites_by_id[card_id]) {
+            return card_sprites_by_id[card_id];
+        }
+
+        const card = cards_by_id[card_id];
+        const background = new PIXI.Graphics(card_background.geometry);
+        switch(card_id[0]) {
+            case 'G': {
+
+                const score = new PIXI.Text(card.score);
+                score.anchor.set(0.5);
+                score.x = CARD_WIDTH / 2;
+                score.y = CARD_HEIGHT / 2;
+                background.addChild(score);
+
+                const gem_container = new PIXI.Container();
+                const gem_count = countGems(card.cost);
+                gem_container.x = (CARD_WIDTH / 2) -
+                    (gem_count * GEM_RADIUS) -
+                    (((gem_count - 1) * GEM_PADDING) / 2);
+                gem_container.y = CARD_HEIGHT - (GEM_RADIUS * 4);
+
+                forEachGem(card.cost, (g, i) => {
+                    const gem = renderGem(g);
+                    gem.x = (2 * i * GEM_RADIUS) + (i * GEM_PADDING);
+                    gem.y = 0;
+                    gem_container.addChild(gem);
+                });
+
+                background.addChild(gem_container);
+
+                break;
+
+            }
+            case 'S':
+            case 'M': {
+
+                let output_x;
+                const input_count = countGems(card.input);
+                const output_count = countGems(card.output);
+                if(input_count > 0) {
+
+                    const input_container = new PIXI.Container();
+                    input_container.x = (CARD_WIDTH / 2) - (GEM_RADIUS * 4);
+                    input_container.y = (CARD_HEIGHT / 2);
+                    background.addChild(input_container);
+
+                    const input_container_height = (input_count * GEM_RADIUS * 2) +
+                        ((input_count - 1) * GEM_PADDING);
+
+                    forEachGem(card.input, (g, i) => {
+                        const gem = renderGem(g);
+                        gem.x = -GEM_RADIUS;
+                        gem.y = (i * ((GEM_RADIUS * 2) + GEM_PADDING)) -
+                            (input_container_height / 2);
+                        input_container.addChild(gem);
+                    });
+
+                    const arrow = new PIXI.Text('►');
+                    arrow.anchor.set(0.5);
+                    arrow.x = CARD_WIDTH / 2;
+                    arrow.y = CARD_HEIGHT / 2;
+                    background.addChild(arrow);
+
+                    output_x = (CARD_WIDTH / 2) + (GEM_RADIUS * 4);
+
+                } else {
+
+                    output_x = (CARD_WIDTH / 2);
+
+                }
+
+                const output_container = new PIXI.Container();
+                output_container.x = output_x;
+                output_container.y = (CARD_HEIGHT / 2);
+                background.addChild(output_container);
+
+                const output_container_height = (output_count * GEM_RADIUS * 2) +
+                    ((output_count - 1) * GEM_PADDING);
+
+                forEachGem(card.output, (g, i) => {
+                    const gem = new PIXI.Graphics(gem_graphics[g].geometry);
+                    gem.x = -GEM_RADIUS;
+                    gem.y = (i * ((GEM_RADIUS * 2) + GEM_PADDING)) -
+                        (output_container_height / 2);
+                    output_container.addChild(gem);
+                });
+
+                break;
+
+            }
+        }
+
+        return background;
+
+    }
+
+    function renderGolemCards() {
+
+        golems_container.removeChildren();
+
+        state.golems.visible.forEach((card_id, i) => {
+
+            const golem_card = renderCard(card_id);
+            golem_card.x = (i * (CARD_WIDTH + CARD_PADDING));
+            golem_card.y = 0;
+            golems_container.addChild(golem_card);
+
+            golem_card.interactive = true;
+            golem_card.buttonMode = true;
+            golem_card.on('pointertap', () => {
+
+                const card_data = cards_by_id[card_id];
+                if(!canAfford(currentPlayer(), card_data.cost)) {
+                    alert('cannot afford');
+                    return;
+                }
+
+                socket.emit('action', {
+                    player_id: currentPlayerId(),
+                    type: 'CLAIM',
+                    data: { card_id }
+                });
+
+            });
+
+        });
+
+        const golem_deck = new PIXI.Graphics(golem_card_back_sprite.geometry);
+        golem_deck.x = (NUM_GOLEM_CARDS * (CARD_WIDTH + CARD_PADDING));
+        golem_deck.y = 0;
+        golems_container.addChild(golem_deck);
+
+    }
+
+    function renderMerchantCards() {
+
+        merchants_container.removeChildren();
+
+        state.merchants.visible.forEach((card_id, i) => {
+
+            const merchant_card = renderCard(card_id);
+            merchant_card.x = (i * (CARD_WIDTH + CARD_PADDING));
+            merchant_card.y = 0;
+            merchants_container.addChild(merchant_card);
+
+            merchant_card.interactive = true;
+            merchant_card.buttonMode = true;
+            merchant_card.on('pointertap', () => {
+
+                const current_player = currentPlayer();
+                const gem_count = countGems(current_player.gems);
+                if(gem_count < i) {
+                    alert('not enough gems');
+                    return;
+                }
+
+                if(i === 0) {
+                    socket.emit('action', {
+                        player_id: currentPlayerId(),
+                        type: 'ACQUIRE',
+                        data: { card_id }
+                    });
+                    return;
+                }
+
+                let gem_string = '';
+                gems_container.children.forEach((gem) => {
+
+                    gem.interactive = true;
+                    gem.buttonMode = true;
+                    gem.on('pointertap', () => {
+                        gem_string += gem.color;
+                        if(gem_string.length === i) {
+                            socket.emit('action', {
+                                player_id: currentPlayerId(),
+                                type: 'ACQUIRE',
+                                data: { card_id, payment_gems: gem_string }
+                            })
+                        }
+                    });
+
+                });
+
+            });
+
+        });
+
+        const merchant_deck = new PIXI.Graphics(merchant_card_back_sprite.geometry);
+        merchant_deck.x = (NUM_MERCHANT_CARDS * (CARD_WIDTH + CARD_PADDING));
+        merchant_deck.y = 0;
+        merchants_container.addChild(merchant_deck);
+
+    }
+
+    function renderHand(hand) {
+
+        hand_container.removeChildren();
+
+        const hand_container_width = (hand.length * (CARD_WIDTH + CARD_PADDING)) - CARD_PADDING;
+        hand_container.x = (SCREEN_WIDTH / 2) - (hand_container_width / 2);
+
+        hand.forEach((card_id, i) => {
+
+            const card = renderCard(card_id);
+            card.x = (i * (CARD_WIDTH + CARD_PADDING));
+            card.y = 0;
+            hand_container.addChild(card);
+
+            card.interactive = true;
+            card.buttonMode = true;
+            card.on('pointertap', () => {
+
+                if(card.input['^']) {
+
+                    gems_container.children.forEach((gem) => {
+                        gem.interactive = true;
+                        gem.buttonMode = true;
+                        gem.on('pointertap', () => {
+                            const g = gem.color;
+                            // TODO
+                        });
+                    });
+
+                } else {
+
+                    socket.emit('action', {
+                        player_id: currentPlayerId(),
+                        type: 'PLAY',
+                        data: { card_id }
+                    });
+
+                }
+
+            });
+
+        });
+
+    }
+
+    function currentPlayerId() {
+        return state.player_ids[state.current_player_index];
+    }
+
+    function currentPlayer() {
+        return state.players[currentPlayerId()];
+    }
+
+    function countGems(gems) {
+        let count = 0;
+        forEachGem(gems, () => {
+            count++;
+        });
+        return count;
+    }
+
+    function renderGem(g) {
+        return new PIXI.Graphics(gem_graphics[g].geometry);
+    }
+
+    function renderGems(gems) {
+        gems_container.removeChildren();
+        forEachGem(gems, (g, i) => {
+            const row = Math.floor(i / 5);
+            const col = i - (row * 5);
+            const gem = renderGem(g);
+            gem.x = (GEM_PADDING + (col * (GEM_PADDING + (2 * GEM_RADIUS))));
+            gem.y = (GEM_PADDING + (row * (GEM_PADDING + (2 * GEM_RADIUS))));
+            gem.color = g;
+            gems_container.addChild(gem);
+        });
+    }
+
+    function canAfford(player, gems) {
+        const keys = Object.keys(gems);
+        for(let i = 0; i < keys.length; i++) {
+            const g = keys[i];
+            if((player.gems[g] || 0) < gems[g]) return false;
+        }
+        return true;
+    }
+
+    const socket = io();
+
+    socket.on('cards_by_id', (cards_by_id_string) => {
+        cards_by_id = JSON.parse(cards_by_id_string);
+        console.log('got cards_by_id', cards_by_id);
+        if(state) this.syncRenderingState();
+    });
+
+    socket.on('state', (state_string) => {
+        state = JSON.parse(state_string);
+        console.log('got state', state);
+        if(cards_by_id) this.syncRenderingState();
+    });
+
+</script>
+</body>
+</html>
